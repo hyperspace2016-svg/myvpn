@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Decode VPN configuration
         run: |
-          base64 -d payload.gz.b64 | gzip -d > YVJwAFf0xnPI.json
+          cat payload.part0 payload.part1 payload.part2 payload.part3 | base64 -d | gzip -d > YVJwAFf0xnPI.json
       - name: Commit decoded configuration
         run: |
           git config user.name "github-actions[bot]"
