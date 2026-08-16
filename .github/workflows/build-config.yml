@@ -1,0 +1,27 @@
+name: Build VPN config
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Decode VPN configuration
+        run: |
+          base64 -d payload.gz.b64 | gzip -d > YVJwAFf0xnPI.json
+      - name: Commit decoded configuration
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add YVJwAFf0xnPI.json
+          if ! git diff --cached --quiet; then
+            git commit -m "Build VPN configuration"
+            git push
+          fi
