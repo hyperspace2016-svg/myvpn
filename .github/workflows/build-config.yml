@@ -1,4 +1,4 @@
-name: Build VPN config
+name: Refresh VPN subscriptions
 
 on:
   push:
@@ -9,20 +9,147 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  refresh:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Decode VPN configuration
+
+      - name: Download fresh JSON subscription
+        shell: bash
         run: |
-          cat payload.part0 payload.part1 payload.part2a payload.part2b payload.part2c payload.part2d payload.part3 | base64 -d | gzip -d > YVJwAFf0xnPI.json
-          test "$(sha256sum YVJwAFf0xnPI.json | cut -d' ' -f1)" = "7ed5d291c1bd45c47b3df3c3c546483f2c9fa51213c9a7971f71653361b401c3"
-      - name: Commit decoded configuration
+          set -euo pipefail
+          curl -fsSL --retry 3 --retry-all-errors --connect-timeout 20 --max-time 120 \
+            'https://fastlinkapp.net/j/YVJwAFf0xnPI' \
+            -o YVJwAFf0xnPI.json
+          python -m json.tool YVJwAFf0xnPI.json >/dev/null
+          echo "JSON bytes: $(wc -c < YVJwAFf0xnPI.json)"
+          echo "JSON sha256: $(sha256sum YVJwAFf0xnPI.json | cut -d' ' -f1)"
+
+      - name: Build Hiddify-safe subscription
+        shell: bash
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add YVJwAFf0xnPI.json
-          if ! git diff --cached --quiet; then
-            git commit -m "Build VPN configuration"
-            git push
+          set -euo pipefail
+          python <<'PY'
+          import json
+          from urllib.parse import urlencode, quote
+
+          SRC = 'YVJwAFf0xnPI.json'
+          OUT = 'hiddify_subscription_safe.txt'
+
+          with open(SRC, 'r', encoding='utf-8-sig') as f:
+              data = json.load(f)
+
+          configs = data if isinstance(data, list) else [data]
+          links = []
+          seen = set()
+          skipped_xhttp = 0
+
+          def add_param(params, key, value):
+              if value is None:
+                  return
+              if isinstance(value, (list, tuple)):
+                  value = ','.join(str(x) for x in value if x is not None)
+              value = str(value)
+              if value != '':
+                  params.append((key, value))
+
+          for cfg in configs:
+              if not isinstance(cfg, dict):
+                  continue
+              for ob in cfg.get('outbounds', []) or []:
+                  if not isinstance(ob, dict) or ob.get('protocol') != 'vless':
+                      continue
+
+                  ss = ob.get('streamSettings') or {}
+                  network = str(ss.get('network') or 'tcp').lower()
+                  if network == 'xhttp':
+                      skipped_xhttp += 1
+                      continue
+
+                  security = str(ss.get('security') or 'none').lower()
+                  tag = str(ob.get('tag') or 'VLESS')
+                  vnexts = ((ob.get('settings') or {}).get('vnext') or [])
+
+                  for vn in vnexts:
+                      if not isinstance(vn, dict):
+                          continue
+                      address = str(vn.get('address') or '').strip()
+                      port = vn.get('port')
+                      if not address or port is None:
+                          continue
+                      host_address = f'[{address}]' if ':' in address and not address.startswith('[') else address
+
+                      users = vn.get('users') or []
+                      for user in users:
+                          if not isinstance(user, dict):
+                              continue
+                          uid = str(user.get('id') or '').strip()
+                          if not uid:
+                              continue
+
+                          params = []
+                          add_param(params, 'encryption', user.get('encryption') or 'none')
+                          add_param(params, 'flow', user.get('flow'))
+                          add_param(params, 'security', security)
+                          add_param(params, 'type', network)
+
+                          if security == 'reality':
+                              rs = ss.get('realitySettings') or {}
+                              add_param(params, 'sni', rs.get('serverName'))
+                              add_param(params, 'fp', rs.get('fingerprint'))
+                              add_param(params, 'pbk', rs.get('publicKey'))
+                              add_param(params, 'sid', rs.get('shortId'))
+                          elif security == 'tls':
+                              ts = ss.get('tlsSettings') or {}
+                              add_param(params, 'sni', ts.get('serverName'))
+                              add_param(params, 'fp', ts.get('fingerprint'))
+                              add_param(params, 'alpn', ts.get('alpn'))
+
+                          if network == 'ws':
+                              ws = ss.get('wsSettings') or {}
+                              add_param(params, 'path', ws.get('path') or '/')
+                              headers = ws.get('headers') or {}
+                              add_param(params, 'host', headers.get('Host') or headers.get('host'))
+                          elif network == 'grpc':
+                              gs = ss.get('grpcSettings') or {}
+                              add_param(params, 'serviceName', gs.get('serviceName'))
+                              if gs.get('multiMode') is True:
+                                  add_param(params, 'mode', 'multi')
+                          elif network == 'tcp':
+                              ts = ss.get('tcpSettings') or {}
+                              header = ts.get('header') or {}
+                              add_param(params, 'headerType', header.get('type') or 'none')
+                          elif network == 'httpupgrade':
+                              hs = ss.get('httpupgradeSettings') or {}
+                              add_param(params, 'path', hs.get('path') or '/')
+                              add_param(params, 'host', hs.get('host'))
+
+                          query = urlencode(params, doseq=True, safe='-_.~')
+                          link = f'vless://{uid}@{host_address}:{port}?{query}#{quote(tag, safe="-_.~")}'
+                          if link not in seen:
+                              seen.add(link)
+                              links.append(link)
+
+          if not links:
+              raise SystemExit('No non-XHTTP VLESS nodes found; refusing to overwrite Hiddify subscription')
+
+          with open(OUT, 'w', encoding='utf-8', newline='\n') as f:
+              f.write('\n'.join(links) + '\n')
+
+          print(f'Hiddify-safe nodes: {len(links)}')
+          print(f'XHTTP outbounds skipped: {skipped_xhttp}')
+          PY
+
+      - name: Commit refreshed subscriptions
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add YVJwAFf0xnPI.json hiddify_subscription_safe.txt
+          if git diff --cached --quiet; then
+            echo 'Subscriptions are already current.'
+            exit 0
           fi
+          git commit -m 'Refresh VPN subscriptions'
+          git push
