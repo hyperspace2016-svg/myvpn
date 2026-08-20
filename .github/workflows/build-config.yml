@@ -1,8 +1,6 @@
 name: Refresh VPN subscriptions
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -59,17 +57,14 @@ jobs:
               for ob in cfg.get('outbounds', []) or []:
                   if not isinstance(ob, dict) or ob.get('protocol') != 'vless':
                       continue
-
                   ss = ob.get('streamSettings') or {}
                   network = str(ss.get('network') or 'tcp').lower()
                   if network == 'xhttp':
                       skipped_xhttp += 1
                       continue
-
                   security = str(ss.get('security') or 'none').lower()
                   tag = str(ob.get('tag') or 'VLESS')
                   vnexts = ((ob.get('settings') or {}).get('vnext') or [])
-
                   for vn in vnexts:
                       if not isinstance(vn, dict):
                           continue
@@ -78,21 +73,17 @@ jobs:
                       if not address or port is None:
                           continue
                       host_address = f'[{address}]' if ':' in address and not address.startswith('[') else address
-
-                      users = vn.get('users') or []
-                      for user in users:
+                      for user in vn.get('users') or []:
                           if not isinstance(user, dict):
                               continue
                           uid = str(user.get('id') or '').strip()
                           if not uid:
                               continue
-
                           params = []
                           add_param(params, 'encryption', user.get('encryption') or 'none')
                           add_param(params, 'flow', user.get('flow'))
                           add_param(params, 'security', security)
                           add_param(params, 'type', network)
-
                           if security == 'reality':
                               rs = ss.get('realitySettings') or {}
                               add_param(params, 'sni', rs.get('serverName'))
@@ -104,7 +95,6 @@ jobs:
                               add_param(params, 'sni', ts.get('serverName'))
                               add_param(params, 'fp', ts.get('fingerprint'))
                               add_param(params, 'alpn', ts.get('alpn'))
-
                           if network == 'ws':
                               ws = ss.get('wsSettings') or {}
                               add_param(params, 'path', ws.get('path') or '/')
@@ -123,7 +113,6 @@ jobs:
                               hs = ss.get('httpupgradeSettings') or {}
                               add_param(params, 'path', hs.get('path') or '/')
                               add_param(params, 'host', hs.get('host'))
-
                           query = urlencode(params, doseq=True, safe='-_.~')
                           link = f'vless://{uid}@{host_address}:{port}?{query}#{quote(tag, safe="-_.~")}'
                           if link not in seen:
