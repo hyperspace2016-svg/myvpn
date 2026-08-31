@@ -10,8 +10,46 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Download and validate
+        shell: bash
         run: |
-          curl -fsSL --retry 3 'https://northgate-docs.com/s/YVJwAFf0xnPI' -o YVJwAFf0xnPI.json
+          set -euo pipefail
+          rm -f candidate.tmp YVJwAFf0xnPI.new.json
+          ok=0
+          for url in \
+            'https://northgate-docs.com/s/YVJwAFf0xnPI' \
+            'https://northgate-docs.com/j/YVJwAFf0xnPI'; do
+            for ua in 'v2rayNG/1.10' 'Hiddify/4.1' 'Mozilla/5.0'; do
+              if curl -fsSL --retry 2 -A "$ua" "$url" -o candidate.tmp; then
+                if python - <<'PY'
+          import json, base64
+          p='candidate.tmp'
+          raw=open(p,'rb').read().strip()
+          candidates=[raw]
+          try:
+              candidates.append(base64.b64decode(raw, validate=False))
+          except Exception:
+              pass
+          for blob in candidates:
+              try:
+                  text=blob.decode('utf-8-sig')
+                  obj=json.loads(text)
+              except Exception:
+                  continue
+              if not isinstance(obj,(list,dict)):
+                  continue
+              open('YVJwAFf0xnPI.new.json','w',encoding='utf-8',newline='\n').write(json.dumps(obj,ensure_ascii=False,separators=(',',':')))
+              raise SystemExit(0)
+          raise SystemExit(1)
+          PY
+                then
+                  ok=1
+                  break 2
+                fi
+              fi
+            done
+          done
+          test "$ok" = 1
+          mv YVJwAFf0xnPI.new.json YVJwAFf0xnPI.json
           python -m json.tool YVJwAFf0xnPI.json >/dev/null
       - name: Build Hiddify-safe list
         run: |
