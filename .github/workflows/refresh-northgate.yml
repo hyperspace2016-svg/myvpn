@@ -1,0 +1,64 @@
+name: Refresh VPN from Northgate
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download and validate
+        run: |
+          curl -fsSL --retry 3 'https://northgate-docs.com/s/YVJwAFf0xnPI' -o YVJwAFf0xnPI.json
+          python -m json.tool YVJwAFf0xnPI.json >/dev/null
+      - name: Build Hiddify-safe list
+        run: |
+          python <<'PY'
+          import json
+          from urllib.parse import urlencode, quote
+          data=json.load(open('YVJwAFf0xnPI.json',encoding='utf-8-sig'))
+          cfgs=data if isinstance(data,list) else [data]
+          out=[]; seen=set()
+          def add(p,k,v):
+              if v is not None and str(v)!='': p.append((k,str(v)))
+          for cfg in cfgs:
+              if not isinstance(cfg,dict): continue
+              for ob in cfg.get('outbounds',[]) or []:
+                  if not isinstance(ob,dict) or ob.get('protocol')!='vless': continue
+                  ss=ob.get('streamSettings') or {}; net=str(ss.get('network') or 'tcp').lower()
+                  if net=='xhttp': continue
+                  sec=str(ss.get('security') or 'none').lower(); tag=str(ob.get('tag') or 'VLESS')
+                  for vn in ((ob.get('settings') or {}).get('vnext') or []):
+                      addr=str(vn.get('address') or '').strip(); port=vn.get('port')
+                      if not addr or port is None: continue
+                      host=f'[{addr}]' if ':' in addr and not addr.startswith('[') else addr
+                      for u in vn.get('users') or []:
+                          uid=str(u.get('id') or '').strip()
+                          if not uid: continue
+                          p=[]; add(p,'encryption',u.get('encryption') or 'none'); add(p,'flow',u.get('flow')); add(p,'security',sec); add(p,'type',net)
+                          if sec=='reality':
+                              r=ss.get('realitySettings') or {}; add(p,'sni',r.get('serverName')); add(p,'fp',r.get('fingerprint')); add(p,'pbk',r.get('publicKey')); add(p,'sid',r.get('shortId'))
+                          elif sec=='tls':
+                              t=ss.get('tlsSettings') or {}; add(p,'sni',t.get('serverName')); add(p,'fp',t.get('fingerprint'))
+                          if net=='ws':
+                              w=ss.get('wsSettings') or {}; add(p,'path',w.get('path') or '/'); h=w.get('headers') or {}; add(p,'host',h.get('Host') or h.get('host'))
+                          elif net=='grpc':
+                              g=ss.get('grpcSettings') or {}; add(p,'serviceName',g.get('serviceName'))
+                          elif net=='tcp':
+                              t=ss.get('tcpSettings') or {}; add(p,'headerType',(t.get('header') or {}).get('type') or 'none')
+                          elif net=='httpupgrade':
+                              h=ss.get('httpupgradeSettings') or {}; add(p,'path',h.get('path') or '/'); add(p,'host',h.get('host'))
+                          link=f"vless://{uid}@{host}:{port}?{urlencode(p,safe='-_.~')}#{quote(tag,safe='-_.~')}"
+                          if link not in seen: seen.add(link); out.append(link)
+          if not out: raise SystemExit('No non-XHTTP VLESS nodes found')
+          open('hiddify_subscription_safe.txt','w',encoding='utf-8',newline='\n').write('\n'.join(out)+'\n')
+          print('Hiddify-safe nodes:',len(out))
+          PY
+      - name: Commit files
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add YVJwAFf0xnPI.json hiddify_subscription_safe.txt
+          if ! git diff --cached --quiet; then git commit -m 'Refresh VPN subscriptions'; git push; fi
